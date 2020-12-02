@@ -144,7 +144,7 @@ static ApiArgsType getAllArgs(const Parser &parser) {
     for (auto &pr :  parser.getUrlArgs()) {
         allArgs[pr.first] = pr.second;
     }
-    return std::move(allArgs);
+    return allArgs;
 }
 
 static inline void addHttpListener(){
@@ -395,8 +395,25 @@ void installWebApi() {
         item["vhost"] = media->getVhost();
         item["app"] = media->getApp();
         item["stream"] = media->getId();
+        item["createStamp"] = (Json::UInt64) media->getCreateStamp();
+        item["aliveSecond"] = (Json::UInt64) media->getAliveSecond();
+        item["bytesSpeed"] = media->getBytesSpeed();
         item["readerCount"] = media->readerCount();
         item["totalReaderCount"] = media->totalReaderCount();
+        item["originType"] = (int) media->getOriginType();
+        item["originTypeStr"] = getOriginTypeString(media->getOriginType());
+        item["originUrl"] = media->getOriginUrl();
+        auto originSock = media->getOriginSock();
+        if (originSock) {
+            item["originSock"]["local_ip"] = originSock->get_local_ip();
+            item["originSock"]["local_port"] = originSock->get_local_port();
+            item["originSock"]["peer_ip"] = originSock->get_peer_ip();
+            item["originSock"]["peer_port"] = originSock->get_peer_port();
+            item["originSock"]["identifier"] = originSock->getIdentifier();
+        } else {
+            item["originSock"] = Json::nullValue;
+        }
+
         for(auto &track : media->getTracks()){
             Value obj;
             auto codec_type = track->getTrackType();
@@ -479,12 +496,12 @@ void installWebApi() {
                                      allArgs["vhost"],
                                      allArgs["app"],
                                      allArgs["stream"]);
-        if(src){
+        if (src) {
             bool flag = src->close(allArgs["force"].as<bool>());
             val["result"] = flag ? 0 : -1;
             val["msg"] = flag ? "success" : "close failed";
-            val["code"] = API::OtherFailed;
-        }else{
+            val["code"] = flag ? API::Success : API::OtherFailed;
+        } else {
             val["result"] = -2;
             val["msg"] = "can not find the stream";
             val["code"] = API::OtherFailed;
@@ -596,8 +613,6 @@ void installWebApi() {
                                     const string &app,
                                     const string &stream,
                                     const string &url,
-                                    bool enable_rtsp,
-                                    bool enable_rtmp,
                                     bool enable_hls,
                                     bool enable_mp4,
                                     int rtp_type,
@@ -610,7 +625,7 @@ void installWebApi() {
             return;
         }
         //添加拉流代理
-        PlayerProxy::Ptr player(new PlayerProxy(vhost,app,stream,enable_rtsp,enable_rtmp,enable_hls,enable_mp4));
+        PlayerProxy::Ptr player(new PlayerProxy(vhost, app, stream, enable_hls, enable_mp4));
         s_proxyMap[key] = player;
         
         //指定RTP over TCP(播放rtsp时有效)
@@ -636,13 +651,11 @@ void installWebApi() {
     //测试url http://127.0.0.1/index/api/addStreamProxy?vhost=__defaultVhost__&app=proxy&enable_rtsp=1&enable_rtmp=1&stream=0&url=rtmp://127.0.0.1/live/obs
     api_regist2("/index/api/addStreamProxy",[](API_ARGS2){
         CHECK_SECRET();
-        CHECK_ARGS("vhost","app","stream","url","enable_rtsp","enable_rtmp");
+        CHECK_ARGS("vhost","app","stream","url");
         addStreamProxy(allArgs["vhost"],
                        allArgs["app"],
                        allArgs["stream"],
                        allArgs["url"],
-                       allArgs["enable_rtsp"],/* 是否rtsp转发 */
-                       allArgs["enable_rtmp"],/* 是否rtmp转发 */
                        allArgs["enable_hls"],/* 是否hls转发 */
                        allArgs["enable_mp4"],/* 是否MP4录制 */
                        allArgs["rtp_type"],
@@ -944,50 +957,60 @@ void installWebApi() {
         CHECK_ARGS("url", "timeout_sec", "expire_sec");
         GET_CONFIG(string, snap_root, API::kSnapRoot);
 
+        bool have_old_snap = false, res_old_snap = false;
         int expire_sec = allArgs["expire_sec"];
         auto scan_path = File::absolutePath(MD5(allArgs["url"]).hexdigest(), snap_root) + "/";
-        string snap_path;
+        string new_snap = StrPrinter << scan_path << time(NULL) << ".jpeg";
+
         File::scanDir(scan_path, [&](const string &path, bool isDir) {
-            if (isDir) {
-                //忽略文件夹
+            if (isDir || !end_with(path, ".jpeg")) {
+                //忽略文件夹或其他类型的文件
                 return true;
             }
 
             //找到截图
             auto tm = FindField(path.data() + scan_path.size(), nullptr, ".jpeg");
             if (atoll(tm.data()) + expire_sec < time(NULL)) {
-                //截图已经过期,删除之，后面重新生成
-                File::delete_file(path.data());
+                //截图已经过期，改名，以便再次请求时，可以返回老截图
+                rename(path.data(), new_snap.data());
+                have_old_snap = true;
                 return true;
             }
 
-            //截图未过期,中断遍历，返回上次生成的截图
-            snap_path = path;
+            //截图存在，且未过期，那么返回之
+            res_old_snap = true;
+            responseSnap(path, headerIn, invoker);
+            //中断遍历
             return false;
         });
 
-        if(!snap_path.empty()){
-            responseSnap(snap_path, headerIn, invoker);
+        if (res_old_snap) {
+            //已经回复了旧的截图
             return;
         }
 
         //无截图或者截图已经过期
-        snap_path = StrPrinter << scan_path << time(NULL) << ".jpeg";
-
-        //生成一个空文件，目的是顺便创建文件夹路径，
-        //同时防止在FFmpeg生成截图途中不停的尝试调用该api启动FFmpeg生成相同的截图
-        auto file = File::create_file(snap_path.data(), "wb");
-        if (file) {
-            fclose(file);
+        if (!have_old_snap) {
+            //无过期截图，生成一个空文件，目的是顺便创建文件夹路径
+            //同时防止在FFmpeg生成截图途中不停的尝试调用该api多次启动FFmpeg进程
+            auto file = File::create_file(new_snap.data(), "wb");
+            if (file) {
+                fclose(file);
+            }
         }
 
-        //启动FFmpeg进程，开始截图
-        FFmpegSnap::makeSnap(allArgs["url"],snap_path,allArgs["timeout_sec"],[invoker,headerIn,snap_path](bool success){
-            if(!success){
+        //启动FFmpeg进程，开始截图，生成临时文件，截图成功后替换为正式文件
+        auto new_snap_tmp = new_snap + ".tmp";
+        FFmpegSnap::makeSnap(allArgs["url"], new_snap_tmp, allArgs["timeout_sec"], [invoker, headerIn, new_snap, new_snap_tmp](bool success) {
+            if (!success) {
                 //生成截图失败，可能残留空文件
-                File::delete_file(snap_path.data());
+                File::delete_file(new_snap_tmp.data());
+            } else {
+                //临时文件改成正式文件
+                File::delete_file(new_snap.data());
+                rename(new_snap_tmp.data(), new_snap.data());
             }
-            responseSnap(snap_path, headerIn, invoker);
+            responseSnap(new_snap, headerIn, invoker);
         });
     });
 
@@ -1071,8 +1094,6 @@ void installWebApi() {
                        allArgs["stream"],
                        /** 支持rtsp和rtmp方式拉流 ，rtsp支持h265/h264/aac,rtmp仅支持h264/aac **/
                        "rtsp://184.72.239.149/vod/mp4:BigBuckBunny_115k.mov",
-                       true,/* 开启rtsp转发 */
-                       true,/* 开启rtmp转发 */
                        true,/* 开启hls转发 */
                        false,/* 禁用MP4录制 */
                        0,//rtp over tcp方式拉流
@@ -1143,8 +1164,10 @@ void unInstallWebApi(){
         lock_guard<recursive_mutex> lck(s_ffmpegMapMtx);
         s_ffmpegMap.clear();
     }
+
     {
 #if defined(ENABLE_RTPPROXY)
+        RtpSelector::Instance().clear();
         lock_guard<recursive_mutex> lck(s_rtpServerMapMtx);
         s_rtpServerMap.clear();
 #endif

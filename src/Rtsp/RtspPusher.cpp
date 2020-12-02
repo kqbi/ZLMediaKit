@@ -121,8 +121,6 @@ void RtspPusher::onConnect(const SockException &err) {
         onPublishResult(err, false);
         return;
     }
-    //推流器不需要多大的接收缓存，节省内存占用
-    _sock->setReadBuffer(std::make_shared<BufferRaw>(1 * 1024));
     sendAnnounce();
 }
 
@@ -228,7 +226,7 @@ bool RtspPusher::handleAuthenticationFailure(const string &params_str) {
 void RtspPusher::createUdpSockIfNecessary(int track_idx){
     auto &rtp_sock = _udp_socks[track_idx];
     if (!rtp_sock) {
-        rtp_sock.reset(new Socket(getPoller()));
+        rtp_sock = createSocket();
         //rtp随机端口
         if (!rtp_sock->bindUdpSock(0, get_local_ip().data())) {
             rtp_sock.reset();
@@ -241,6 +239,9 @@ void RtspPusher::sendSetup(unsigned int track_idx) {
     _on_res_func = std::bind(&RtspPusher::handleResSetup, this, placeholders::_1, track_idx);
     auto &track = _track_vec[track_idx];
     auto base_url = _content_base + "/" + track->_control_surffix;
+    if (track->_control.find("://") != string::npos) {
+        base_url = track->_control;
+    }
     switch (_rtp_type) {
         case Rtsp::RTP_TCP: {
             sendRtspRequest("SETUP", base_url, {"Transport",
@@ -318,7 +319,7 @@ inline void RtspPusher::sendRtpPacket(const RtspMediaSource::RingDataType &pkt) 
                     setSendFlushFlag(true);
                 }
                 BufferRtp::Ptr buffer(new BufferRtp(rtp));
-                send(buffer);
+                send(std::move(buffer));
             });
             break;
         }
@@ -335,7 +336,7 @@ inline void RtspPusher::sendRtpPacket(const RtspMediaSource::RingDataType &pkt) 
                 }
 
                 BufferRtp::Ptr buffer(new BufferRtp(rtp, 4));
-                pSock->send(buffer, nullptr, 0, ++i == size);
+                pSock->send(std::move(buffer), nullptr, 0, ++i == size);
             });
             break;
         }
@@ -400,7 +401,7 @@ void RtspPusher::setSocketFlags(){
     if (merge_write_ms > 0) {
         //提高发送性能
         setSendFlags(SOCKET_DEFAULE_FLAGS | FLAG_MORE);
-        SockUtil::setNoDelay(_sock->rawFD(), false);
+        SockUtil::setNoDelay(getSock()->rawFD(), false);
     }
 }
 
@@ -475,7 +476,7 @@ void RtspPusher::sendRtspRequest(const string &cmd, const string &url,const StrC
     if (!sdp.empty()) {
         printer << sdp;
     }
-    SockSender::send(printer);
+    SockSender::send(std::move(printer));
 }
 
 

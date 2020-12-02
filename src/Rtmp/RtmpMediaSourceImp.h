@@ -60,12 +60,12 @@ public:
     /**
      * 输入rtmp并解析
      */
-    void onWrite(const RtmpPacket::Ptr &pkt, bool = true) override {
+    void onWrite(RtmpPacket::Ptr pkt, bool = true) override {
         if (!_all_track_ready || _muxer->isEnabled()) {
             //未获取到所有Track后，或者开启转协议，那么需要解复用rtmp
             _demuxer->inputRtmp(pkt);
         }
-        RtmpMediaSource::onWrite(pkt);
+        RtmpMediaSource::onWrite(std::move(pkt));
     }
 
     /**
@@ -77,17 +77,16 @@ public:
 
     /**
      * 设置协议转换
-     * @param enableRtsp 是否转换成rtsp
      * @param enableHls  是否转换成hls
      * @param enableMP4  是否mp4录制
      */
-    void setProtocolTranslation(bool enableRtsp, bool enableHls, bool enableMP4) {
+    void setProtocolTranslation(bool enableHls, bool enableMP4) {
         //不重复生成rtmp
-        _muxer = std::make_shared<MultiMediaSourceMuxer>(getVhost(), getApp(), getId(), _demuxer->getDuration(), enableRtsp, false, enableHls, enableMP4);
+        _muxer = std::make_shared<MultiMediaSourceMuxer>(getVhost(), getApp(), getId(), _demuxer->getDuration(), true, false, enableHls, enableMP4);
         _muxer->setMediaListener(getListener());
         _muxer->setTrackListener(static_pointer_cast<RtmpMediaSourceImp>(shared_from_this()));
         //让_muxer对象拦截一部分事件(比如说录像相关事件)
-        setListener(_muxer);
+        MediaSource::setListener(_muxer);
 
         for(auto &track : _demuxer->getTracks(false)){
             _muxer->addTrack(track);
@@ -117,6 +116,20 @@ public:
                 Metadata::addTrack(_metadata, track);
             }
             RtmpMediaSource::updateMetaData(_metadata);
+        }
+    }
+
+    /**
+     * 设置事件监听器
+     * @param listener 监听器
+     */
+    void setListener(const std::weak_ptr<MediaSourceEvent> &listener) override{
+        if (_muxer) {
+            //_muxer对象不能处理的事件再给listener处理
+            _muxer->setMediaListener(listener);
+        } else {
+            //未创建_muxer对象，事件全部给listener处理
+            MediaSource::setListener(listener);
         }
     }
 

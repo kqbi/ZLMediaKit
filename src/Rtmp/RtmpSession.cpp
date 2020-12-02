@@ -17,8 +17,6 @@ RtmpSession::RtmpSession(const Socket::Ptr &sock) : TcpSession(sock) {
     DebugP(this);
     GET_CONFIG(uint32_t,keep_alive_sec,Rtmp::kKeepAliveSecond);
     sock->setSendTimeOutSecond(keep_alive_sec);
-    //起始接收buffer缓存设置为4K，节省内存
-    sock->setReadBuffer(std::make_shared<BufferRaw>(4 * 1024));
 }
 
 RtmpSession::~RtmpSession() {
@@ -126,7 +124,7 @@ void RtmpSession::onCmd_publish(AMFDecoder &dec) {
     _media_info.parse(_tc_url + "/" + getStreamId(dec.load<std::string>()));
     _media_info._schema = RTMP_SCHEMA;
 
-    auto on_res = [this,pToken](const string &err, bool enableRtxp, bool enableHls, bool enableMP4){
+    auto on_res = [this,pToken](const string &err, bool enableHls, bool enableMP4){
         auto src = dynamic_pointer_cast<RtmpMediaSource>(MediaSource::find(RTMP_SCHEMA,
                                                                            _media_info._vhost,
                                                                            _media_info._app,
@@ -150,39 +148,35 @@ void RtmpSession::onCmd_publish(AMFDecoder &dec) {
         _publisher_src.reset(new RtmpMediaSourceImp(_media_info._vhost, _media_info._app, _media_info._streamid));
         _publisher_src->setListener(dynamic_pointer_cast<MediaSourceEvent>(shared_from_this()));
         //设置转协议
-        _publisher_src->setProtocolTranslation(enableRtxp, enableHls, enableMP4);
-
-        //如果是rtmp推流客户端，那么加大TCP接收缓存，这样能提升接收性能
-        _sock->setReadBuffer(std::make_shared<BufferRaw>(256 * 1024));
+        _publisher_src->setProtocolTranslation(enableHls, enableMP4);
         setSocketFlags();
     };
 
     if(_media_info._app.empty() || _media_info._streamid.empty()){
         //不允许莫名其妙的推流url
-        on_res("rtmp推流url非法", false, false, false);
+        on_res("rtmp推流url非法", false, false);
         return;
     }
 
-    Broadcast::PublishAuthInvoker invoker = [weak_self,on_res,pToken](const string &err, bool enableRtxp, bool enableHls, bool enableMP4){
+    Broadcast::PublishAuthInvoker invoker = [weak_self, on_res, pToken](const string &err, bool enableHls, bool enableMP4) {
         auto strongSelf = weak_self.lock();
-        if(!strongSelf){
+        if (!strongSelf) {
             return;
         }
-        strongSelf->async([weak_self,on_res,err,pToken,enableRtxp,enableHls,enableMP4](){
+        strongSelf->async([weak_self, on_res, err, pToken, enableHls, enableMP4]() {
             auto strongSelf = weak_self.lock();
-            if(!strongSelf){
+            if (!strongSelf) {
                 return;
             }
-            on_res(err, enableRtxp, enableHls, enableMP4);
+            on_res(err, enableHls, enableMP4);
         });
     };
     auto flag = NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastMediaPublish, _media_info, invoker, static_cast<SockInfo &>(*this));
     if(!flag){
         //该事件无人监听，默认鉴权成功
-        GET_CONFIG(bool,to_rtxp,General::kPublishToRtxp);
         GET_CONFIG(bool,to_hls,General::kPublishToHls);
         GET_CONFIG(bool,to_mp4,General::kPublishToMP4);
-        on_res("", to_rtxp, to_hls, to_mp4);
+        on_res("", to_hls, to_mp4);
     }
 }
 
@@ -544,11 +538,23 @@ int RtmpSession::totalReaderCount(MediaSource &sender) {
     return _publisher_src ? _publisher_src->totalReaderCount() : sender.readerCount();
 }
 
+MediaOriginType RtmpSession::getOriginType(MediaSource &sender) const{
+    return MediaOriginType::rtmp_push;
+}
+
+string RtmpSession::getOriginUrl(MediaSource &sender) const {
+    return _media_info._full_url;
+}
+
+std::shared_ptr<SockInfo> RtmpSession::getOriginSock(MediaSource &sender) const {
+    return const_cast<RtmpSession *>(this)->shared_from_this();
+}
+
 void RtmpSession::setSocketFlags(){
     GET_CONFIG(int, merge_write_ms, General::kMergeWriteMS);
     if (merge_write_ms > 0) {
         //推流模式下，关闭TCP_NODELAY会增加推流端的延时，但是服务器性能将提高
-        SockUtil::setNoDelay(_sock->rawFD(), false);
+        SockUtil::setNoDelay(getSock()->rawFD(), false);
         //播放模式下，开启MSG_MORE会增加延时，但是能提高发送性能
         setSendFlags(SOCKET_DEFAULE_FLAGS | FLAG_MORE);
     }

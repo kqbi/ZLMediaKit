@@ -40,6 +40,7 @@ bool loadIniConfig(const char *ini_path){
 namespace Broadcast {
 const string kBroadcastMediaChanged = "kBroadcastMediaChanged";
 const string kBroadcastRecordMP4 = "kBroadcastRecordMP4";
+const string kBroadcastRecordTs = "kBroadcastRecoredTs";
 const string kBroadcastHttpRequest = "kBroadcastHttpRequest";
 const string kBroadcastHttpAccess = "kBroadcastHttpAccess";
 const string kBroadcastOnGetRtspRealm = "kBroadcastOnGetRtspRealm";
@@ -57,17 +58,22 @@ const string kBroadcastHttpBeforeAccess = "kBroadcastHttpBeforeAccess";
 //通用配置项目
 namespace General{
 #define GENERAL_FIELD "general."
+const string kMediaServerId = GENERAL_FIELD"mediaServerId";
 const string kFlowThreshold = GENERAL_FIELD"flowThreshold";
 const string kStreamNoneReaderDelayMS = GENERAL_FIELD"streamNoneReaderDelayMS";
 const string kMaxStreamWaitTimeMS = GENERAL_FIELD"maxStreamWaitMS";
 const string kEnableVhost = GENERAL_FIELD"enableVhost";
 const string kAddMuteAudio = GENERAL_FIELD"addMuteAudio";
 const string kResetWhenRePlay = GENERAL_FIELD"resetWhenRePlay";
-const string kPublishToRtxp = GENERAL_FIELD"publishToRtxp";
 const string kPublishToHls = GENERAL_FIELD"publishToHls";
 const string kPublishToMP4 = GENERAL_FIELD"publishToMP4";
 const string kMergeWriteMS = GENERAL_FIELD"mergeWriteMS";
 const string kModifyStamp = GENERAL_FIELD"modifyStamp";
+const string kHlsDemand = GENERAL_FIELD"hls_demand";
+const string kRtspDemand = GENERAL_FIELD"rtsp_demand";
+const string kRtmpDemand = GENERAL_FIELD"rtmp_demand";
+const string kTSDemand = GENERAL_FIELD"ts_demand";
+const string kFMP4Demand = GENERAL_FIELD"fmp4_demand";
 
 onceToken token([](){
     mINI::Instance()[kFlowThreshold] = 1024;
@@ -76,11 +82,17 @@ onceToken token([](){
     mINI::Instance()[kEnableVhost] = 0;
     mINI::Instance()[kAddMuteAudio] = 1;
     mINI::Instance()[kResetWhenRePlay] = 1;
-    mINI::Instance()[kPublishToRtxp] = 1;
     mINI::Instance()[kPublishToHls] = 1;
     mINI::Instance()[kPublishToMP4] = 0;
     mINI::Instance()[kMergeWriteMS] = 0;
     mINI::Instance()[kModifyStamp] = 0;
+    mINI::Instance()[kMediaServerId] = makeRandStr(16);
+    mINI::Instance()[kHlsDemand] = 0;
+    mINI::Instance()[kRtspDemand] = 0;
+    mINI::Instance()[kRtmpDemand] = 0;
+    mINI::Instance()[kTSDemand] = 0;
+    mINI::Instance()[kFMP4Demand] = 0;
+
 },nullptr);
 
 }//namespace General
@@ -253,6 +265,8 @@ const string kSegmentRetain = HLS_FIELD"segRetain";
 const string kFileBufSize = HLS_FIELD"fileBufSize";
 //录制文件路径
 const string kFilePath = HLS_FIELD"filePath";
+// 是否广播 ts 切片完成通知
+const string kBroadcastRecordTs = HLS_FIELD"broadcastRecordTs";
 
 onceToken token([](){
     mINI::Instance()[kSegmentDuration] = 2;
@@ -260,6 +274,7 @@ onceToken token([](){
     mINI::Instance()[kSegmentRetain] = 5;
     mINI::Instance()[kFileBufSize] = 64 * 1024;
     mINI::Instance()[kFilePath] = "./www";
+    mINI::Instance()[kBroadcastRecordTs] = false;
 },nullptr);
 } //namespace Hls
 

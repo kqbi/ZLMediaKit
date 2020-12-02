@@ -53,11 +53,11 @@ protected:
      * @param buf 需要截取的数据
      * @return 数据字节数
      */
-    int send(const Buffer::Ptr &buf) override {
+    int send(Buffer::Ptr buf) override {
         if (_beforeSendCB) {
             return _beforeSendCB(buf);
         }
-        return TcpSessionType::send(buf);
+        return TcpSessionType::send(std::move(buf));
     }
 
     string getIdentifier() const override {
@@ -117,7 +117,7 @@ protected:
      */
     bool onWebSocketConnect(const Parser &header) override{
         //创建websocket session类
-        _session = _creator(header, *this,HttpSessionType::_sock);
+        _session = _creator(header, *this,HttpSessionType::getSock());
         if(!_session){
             //此url不允许创建websocket连接
             return false;
@@ -219,8 +219,8 @@ protected:
     /**
      * 发送数据进行websocket协议打包后回调
     */
-    void onWebSocketEncodeData(const Buffer::Ptr &buffer) override{
-        HttpSessionType::send(buffer);
+    void onWebSocketEncodeData(Buffer::Ptr buffer) override{
+        HttpSessionType::send(std::move(buffer));
     }
 
 private:

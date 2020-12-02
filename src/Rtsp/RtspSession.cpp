@@ -60,8 +60,6 @@ RtspSession::RtspSession(const Socket::Ptr &sock) : TcpSession(sock) {
     DebugP(this);
     GET_CONFIG(uint32_t,keep_alive_sec,Rtsp::kKeepAliveSecond);
     sock->setSendTimeOutSecond(keep_alive_sec);
-    //起始接收buffer缓存设置为4K，节省内存
-    sock->setReadBuffer(std::make_shared<BufferRaw>(4 * 1024));
 }
 
 RtspSession::~RtspSession() {
@@ -124,12 +122,6 @@ void RtspSession::onRecv(const Buffer::Ptr &buf) {
     } else {
         input(buf->data(), buf->size());
     }
-}
-
-//字符串是否以xx结尾
-static inline bool end_of(const string &str, const string &substr){
-    auto pos = str.rfind(substr);
-    return pos != string::npos && pos == str.size() - substr.size();
 }
 
 void RtspSession::onWholeRtspPacket(Parser &parser) {
@@ -224,7 +216,7 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
     }
 
     auto full_url = parser.FullUrl();
-    if(end_of(full_url,".sdp")){
+    if(end_with(full_url,".sdp")){
         //去除.sdp后缀，防止EasyDarwin推流器强制添加.sdp后缀
         full_url = full_url.substr(0,full_url.length() - 4);
         _media_info.parse(full_url);
@@ -252,7 +244,7 @@ void RtspSession::handleReq_RECORD(const Parser &parser){
         send_SessionNotFound();
         throw SockException(Err_shutdown, _sdp_track.empty() ? "can not find any availabe track when record" : "session not found when record");
     }
-    auto onRes = [this](const string &err,bool enableRtxp,bool enableHls,bool enableMP4){
+    auto onRes = [this](const string &err, bool enableHls, bool enableMP4){
         bool authSuccess = err.empty();
         if(!authSuccess){
             sendRtspResponse("401 Unauthorized", {"Content-Type", "text/plain"}, err);
@@ -261,7 +253,7 @@ void RtspSession::handleReq_RECORD(const Parser &parser){
         }
 
         //设置转协议
-        _push_src->setProtocolTranslation(enableRtxp, enableHls, enableMP4);
+        _push_src->setProtocolTranslation(enableHls, enableMP4);
 
         _StrPrinter rtp_info;
         for(auto &track : _sdp_track){
@@ -276,24 +268,23 @@ void RtspSession::handleReq_RECORD(const Parser &parser){
         rtp_info.pop_back();
         sendRtspResponse("200 OK", {"RTP-Info",rtp_info});
         if(_rtp_type == Rtsp::RTP_TCP){
-            //如果是rtsp推流服务器，并且是TCP推流，那么加大TCP接收缓存，这样能提升接收性能
-            _sock->setReadBuffer(std::make_shared<BufferRaw>(256 * 1024));
+            //如果是rtsp推流服务器，并且是TCP推流，设置socket flags,，这样能提升接收性能
             setSocketFlags();
         }
     };
 
     weak_ptr<RtspSession> weakSelf = dynamic_pointer_cast<RtspSession>(shared_from_this());
-    Broadcast::PublishAuthInvoker invoker = [weakSelf,onRes](const string &err,bool enableRtxp,bool enableHls,bool enableMP4){
+    Broadcast::PublishAuthInvoker invoker = [weakSelf, onRes](const string &err, bool enableHls, bool enableMP4) {
         auto strongSelf = weakSelf.lock();
-        if(!strongSelf){
+        if (!strongSelf) {
             return;
         }
-        strongSelf->async([weakSelf,onRes,err,enableRtxp,enableHls,enableMP4](){
+        strongSelf->async([weakSelf, onRes, err, enableHls, enableMP4]() {
             auto strongSelf = weakSelf.lock();
-            if(!strongSelf){
+            if (!strongSelf) {
                 return;
             }
-            onRes(err,enableRtxp,enableHls,enableMP4);
+            onRes(err, enableHls, enableMP4);
         });
     };
 
@@ -301,10 +292,9 @@ void RtspSession::handleReq_RECORD(const Parser &parser){
     auto flag = NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastMediaPublish, _media_info, invoker, static_cast<SockInfo &>(*this));
     if(!flag){
         //该事件无人监听,默认不鉴权
-        GET_CONFIG(bool,toRtxp,General::kPublishToRtxp);
         GET_CONFIG(bool,toHls,General::kPublishToHls);
         GET_CONFIG(bool,toMP4,General::kPublishToMP4);
-        onRes("",toRtxp,toHls,toMP4);
+        onRes("",toHls,toMP4);
     }
 }
 
@@ -667,10 +657,10 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
         break;
 
     case Rtsp::RTP_UDP: {
-        std::pair<Socket::Ptr, Socket::Ptr> pr;
-        try{
-            pr = makeSockPair(_sock->getPoller(), get_local_ip());
-        }catch(std::exception &ex) {
+        std::pair<Socket::Ptr, Socket::Ptr> pr = std::make_pair(createSocket(),createSocket());
+        try {
+            makeSockPair(pr, get_local_ip());
+        } catch (std::exception &ex) {
             //分配端口失败
             send_NotAcceptable();
             throw SockException(Err_shutdown, ex.what());
@@ -681,8 +671,8 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
 
         //设置客户端内网端口信息
         string strClientPort = FindField(parser["Transport"].data(), "client_port=", NULL);
-        uint16_t ui16RtpPort = atoi( FindField(strClientPort.data(), NULL, "-").data());
-        uint16_t ui16RtcpPort = atoi( FindField(strClientPort.data(), "-" , NULL).data());
+        uint16_t ui16RtpPort = atoi(FindField(strClientPort.data(), NULL, "-").data());
+        uint16_t ui16RtcpPort = atoi(FindField(strClientPort.data(), "-", NULL).data());
 
         struct sockaddr_in peerAddr;
         //设置rtp发送目标地址
@@ -690,14 +680,14 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
         peerAddr.sin_port = htons(ui16RtpPort);
         peerAddr.sin_addr.s_addr = inet_addr(get_peer_ip().data());
         bzero(&(peerAddr.sin_zero), sizeof peerAddr.sin_zero);
-        pr.first->setSendPeerAddr((struct sockaddr *)(&peerAddr));
+        pr.first->setSendPeerAddr((struct sockaddr *) (&peerAddr));
 
         //设置rtcp发送目标地址
         peerAddr.sin_family = AF_INET;
         peerAddr.sin_port = htons(ui16RtcpPort);
         peerAddr.sin_addr.s_addr = inet_addr(get_peer_ip().data());
         bzero(&(peerAddr.sin_zero), sizeof peerAddr.sin_zero);
-        pr.second->setSendPeerAddr((struct sockaddr *)(&peerAddr));
+        pr.second->setSendPeerAddr((struct sockaddr *) (&peerAddr));
 
         //尝试获取客户端nat映射地址
         startListenPeerUdpData(trackIdx);
@@ -714,7 +704,7 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
         break;
     case Rtsp::RTP_MULTICAST: {
         if(!_multicaster){
-            _multicaster = RtpMultiCaster::get(getPoller(), get_local_ip(), _media_info._vhost, _media_info._app, _media_info._streamid);
+            _multicaster = RtpMultiCaster::get(*this, get_local_ip(), _media_info._vhost, _media_info._app, _media_info._streamid);
             if (!_multicaster) {
                 send_NotAcceptable();
                 throw SockException(Err_shutdown, "can not get a available udp multicast socket");
@@ -728,10 +718,10 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
                 strongSelf->safeShutdown(SockException(Err_shutdown,"ring buffer detached"));
             });
         }
-        int iSrvPort = _multicaster->getPort(trackRef->_type);
+        int iSrvPort = _multicaster->getMultiCasterPort(trackRef->_type);
         //我们用trackIdx区分rtp和rtcp包
         //由于组播udp端口是共享的，而rtcp端口为组播udp端口+1，所以rtcp端口需要改成共享端口
-        auto pSockRtcp = UDPServer::Instance().getSock(getPoller(),get_local_ip().data(),2*trackIdx + 1,iSrvPort + 1);
+        auto pSockRtcp = UDPServer::Instance().getSock(*this, get_local_ip().data(), 2 * trackIdx + 1, iSrvPort + 1);
         if (!pSockRtcp) {
             //分配端口失败
             send_NotAcceptable();
@@ -742,7 +732,7 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
 
         sendRtspResponse("200 OK",
                          {"Transport", StrPrinter << "RTP/AVP;multicast;"
-                                                  << "destination=" << _multicaster->getIP() << ";"
+                                                  << "destination=" << _multicaster->getMultiCasterIP() << ";"
                                                   << "source=" << get_local_ip() << ";"
                                                   << "port=" << iSrvPort << "-" << pSockRtcp->get_local_port() << ";"
                                                   << "ttl=" << udpTTL << ";"
@@ -1037,15 +1027,15 @@ bool RtspSession::sendRtspResponse(const string &res_code, const StrCaseMap &hea
         printer << sdp;
     }
 //	DebugP(this) << printer;
-    return send(std::make_shared<BufferString>(printer)) > 0 ;
+    return send(std::make_shared<BufferString>(std::move(printer))) > 0 ;
 }
 
-int RtspSession::send(const Buffer::Ptr &pkt){
+int RtspSession::send(Buffer::Ptr pkt){
 //	if(!_enableSendRtp){
 //		DebugP(this) << pkt->data();
 //	}
     _bytes_usage += pkt->size();
-    return TcpSession::send(pkt);
+    return TcpSession::send(std::move(pkt));
 }
 
 bool RtspSession::sendRtspResponse(const string &res_code, const std::initializer_list<string> &header, const string &sdp, const char *protocol) {
@@ -1112,6 +1102,18 @@ int RtspSession::totalReaderCount(MediaSource &sender) {
     return _push_src ? _push_src->totalReaderCount() : sender.readerCount();
 }
 
+MediaOriginType RtspSession::getOriginType(MediaSource &sender) const{
+    return MediaOriginType::rtsp_push;
+}
+
+string RtspSession::getOriginUrl(MediaSource &sender) const {
+    return _media_info._full_url;
+}
+
+std::shared_ptr<SockInfo> RtspSession::getOriginSock(MediaSource &sender) const {
+    return const_cast<RtspSession *>(this)->shared_from_this();
+}
+
 inline void RtspSession::onSendRtpPacket(const RtpPacket::Ptr &pkt){
 #if RTSP_SERVER_SEND_RTCP
     int track_index = getTrackIndexByTrackType(pkt->type);
@@ -1157,7 +1159,7 @@ void RtspSession::sendRtpPacket(const RtspMediaSource::RingDataType &pkt) {
                 }
                 BufferRtp::Ptr buffer(new BufferRtp(rtp, 4));
                 _bytes_usage += buffer->size();
-                pSock->send(buffer, nullptr, 0, ++i == size);
+                pSock->send(std::move(buffer), nullptr, 0, ++i == size);
             });
         }
             break;
@@ -1230,7 +1232,7 @@ void RtspSession::setSocketFlags(){
     GET_CONFIG(int, mergeWriteMS, General::kMergeWriteMS);
     if(mergeWriteMS > 0) {
         //推流模式下，关闭TCP_NODELAY会增加推流端的延时，但是服务器性能将提高
-        SockUtil::setNoDelay(_sock->rawFD(), false);
+        SockUtil::setNoDelay(getSock()->rawFD(), false);
         //播放模式下，开启MSG_MORE会增加延时，但是能提高发送性能
         setSendFlags(SOCKET_DEFAULE_FLAGS | FLAG_MORE);
     }

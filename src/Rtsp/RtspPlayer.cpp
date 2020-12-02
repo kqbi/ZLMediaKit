@@ -211,7 +211,8 @@ void RtspPlayer::createUdpSockIfNecessary(int track_idx){
     auto &rtpSockRef = _rtp_sock[track_idx];
     auto &rtcpSockRef = _rtcp_sock[track_idx];
     if (!rtpSockRef || !rtcpSockRef) {
-        auto pr = makeSockPair(getPoller(), get_local_ip());
+        std::pair<Socket::Ptr, Socket::Ptr> pr = std::make_pair(createSocket(), createSocket());
+        makeSockPair(pr, get_local_ip());
         rtpSockRef = pr.first;
         rtcpSockRef = pr.second;
     }
@@ -222,6 +223,9 @@ void RtspPlayer::sendSetup(unsigned int track_idx) {
     _on_response = std::bind(&RtspPlayer::handleResSETUP, this, placeholders::_1, track_idx);
     auto &track = _sdp_track[track_idx];
     auto baseUrl = _content_base + "/" + track->_control_surffix;
+    if (track->_control.find("://") != string::npos) {
+        baseUrl = track->_control;
+    }
     switch (_rtp_type) {
         case Rtsp::RTP_TCP: {
             sendRtspRequest("SETUP",baseUrl,{"Transport",StrPrinter << "RTP/AVP/TCP;unicast;interleaved=" << track->_type * 2 << "-" << track->_type * 2 + 1});
@@ -280,7 +284,7 @@ void RtspPlayer::handleResSETUP(const Parser &parser, unsigned int track_idx) {
         if (_rtp_type == Rtsp::RTP_MULTICAST) {
             //udp组播
             auto multiAddr = FindField((strTransport + ";").data(), "destination=", ";");
-            pRtpSockRef.reset(new Socket(getPoller()));
+            pRtpSockRef = createSocket();
             if (!pRtpSockRef->bindUdpSock(rtp_port, multiAddr.data())) {
                 pRtpSockRef.reset();
                 throw std::runtime_error("open udp sock err");
@@ -703,7 +707,8 @@ void RtspPlayer::sendRtspRequest(const string &cmd, const string &url,const StrC
     for (auto &pr : header){
         printer << pr.first << ": " << pr.second << "\r\n";
     }
-    SockSender::send(printer << "\r\n");
+    printer << "\r\n";
+    SockSender::send(std::move(printer));
 }
 
 void RtspPlayer::onRecvRTP_l(const RtpPacket::Ptr &rtp, const SdpTrack::Ptr &track) {

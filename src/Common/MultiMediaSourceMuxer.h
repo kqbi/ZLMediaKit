@@ -10,12 +10,16 @@
 
 #ifndef ZLMEDIAKIT_MULTIMEDIASOURCEMUXER_H
 #define ZLMEDIAKIT_MULTIMEDIASOURCEMUXER_H
+
+#include "Common/Stamp.h"
+#include "Rtp/RtpSender.h"
+#include "Record/Recorder.h"
+#include "Record/HlsRecorder.h"
+#include "Record/HlsMediaSource.h"
 #include "Rtsp/RtspMediaSourceMuxer.h"
 #include "Rtmp/RtmpMediaSourceMuxer.h"
-#include "Record/Recorder.h"
-#include "Record/HlsMediaSource.h"
-#include "Record/HlsRecorder.h"
-#include "Rtp/PSRtpSender.h"
+#include "TS/TSMediaSourceMuxer.h"
+#include "FMP4/FMP4MediaSourceMuxer.h"
 
 namespace mediakit{
 
@@ -46,16 +50,18 @@ private:
     void onTrackReady(const Track::Ptr & track) override;
     void onTrackFrame(const Frame::Ptr &frame) override;
     void onAllTrackReady() override;
-    MediaSource::Ptr getHlsMediaSource() const;
 
 private:
-    bool _enable_rtxp = false;
-    bool _enable_record = false;
+    string _stream_url;
     Listener *_track_listener = nullptr;
     RtmpMediaSourceMuxer::Ptr _rtmp;
     RtspMediaSourceMuxer::Ptr _rtsp;
-    MediaSinkInterface::Ptr _hls;
+    HlsRecorder::Ptr _hls;
     MediaSinkInterface::Ptr _mp4;
+    TSMediaSourceMuxer::Ptr _ts;
+#if defined(ENABLE_MP4)
+    FMP4MediaSourceMuxer::Ptr _fmp4;
+#endif
     std::weak_ptr<MediaSourceEvent> _listener;
 };
 
@@ -136,7 +142,7 @@ public:
      * @param is_udp 是否为udp
      * @param cb 启动成功或失败回调
      */
-    void startSendRtp(MediaSource &sender, const string &dst_url, uint16_t dst_port, uint32_t ssrc, bool is_udp, const function<void(const SockException &ex)> &cb) override;
+    void startSendRtp(MediaSource &sender, const string &dst_url, uint16_t dst_port, const string &ssrc, bool is_udp, const function<void(const SockException &ex)> &cb) override;
 
     /**
      * 停止ps-rtp发送
@@ -177,11 +183,13 @@ public:
     void onAllTrackReady() override;
 
 private:
+    bool _is_enable = false;
+    Ticker _last_check;
     Stamp _stamp[2];
     MultiMuxerPrivate::Ptr _muxer;
     std::weak_ptr<MultiMuxerPrivate::Listener> _track_listener;
 #if defined(ENABLE_RTPPROXY)
-    PSRtpSender::Ptr _ps_rtp_sender;
+    RtpSender::Ptr _rtp_sender;
 #endif //ENABLE_RTPPROXY
 };
 
